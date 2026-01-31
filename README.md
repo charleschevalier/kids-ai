@@ -1,16 +1,16 @@
 # Kids AI - Voice Assistant for Children
 
-A low-latency, French-speaking voice assistant designed for children. The server handles all heavy processing (VAD, STT, LLM, TTS) and exposes a WebSocket API. A thin Android client (future) captures mic audio and plays back responses.
+A low-latency, French-speaking voice assistant designed for children. The server handles all heavy processing (VAD, STT, LLM, TTS) and exposes a WebSocket API. The Android client captures mic audio, streams it over WebSocket, and plays back TTS responses — all behind a full-screen animated robot face.
 
 ## Architecture
 
 ```
-Android app (future)          Server (this repo)
+Android app (React Native)       Server (Python)
 ┌──────────────┐    WebSocket    ┌─────────────────────────────┐
 │ Mic capture  │───── PCM ──────>│ VAD (Silero, CPU)           │
 │              │                 │   ↓                         │
-│              │                 │ STT (faster-whisper, GPU)   │
-│              │                 │   ↓                         │
+│ Robot face   │                 │ STT (faster-whisper, GPU)   │
+│ (animated)   │                 │   ↓                         │
 │              │                 │ LLM (llama.cpp, GPU)        │
 │              │                 │   ↓                         │
 │              │                 │ Sentence chunker            │
@@ -64,7 +64,7 @@ Pick a model that fits your VRAM. With faster-whisper using ~1.5 GB, you have ~1
 # Example: download directly from HuggingFace via llama-server
 # (it downloads on first run when using -hf)
 ~/llama.cpp/build/bin/llama-server \
-    -hf bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M \
+    -hf Qwen/Qwen3-8B-GGUF:Q4_K_M \
     --port 8080 -ngl 99 -c 4096 --host 127.0.0.1
 ```
 
@@ -76,7 +76,7 @@ Or download a GGUF file manually and point to it with `-m /path/to/model.gguf`.
 
 ```bash
 ~/llama.cpp/build/bin/llama-server \
-    -hf bartowski/Qwen2.5-7B-Instruct-GGUF:Q4_K_M \
+    -hf Qwen/Qwen3-8B-GGUF:Q4_K_M \
     --port 8080 -ngl 99 -c 4096 --host 127.0.0.1
 ```
 
@@ -147,7 +147,40 @@ The client connects to `ws://<host>:8765/ws` and communicates using:
 | Silero VAD | CPU only |
 | Piper TTS | CPU only |
 
-## Tests
+## Mobile App
+
+The client is a React Native app that shows a full-screen animated robot face. It streams mic audio to the server and plays back TTS responses. No buttons — the server's VAD detects speech automatically.
+
+### Prerequisites
+
+- Node.js 20+
+- Android SDK (via Android Studio)
+- A physical Android device or emulator
+
+### Setup
+
+```bash
+cd mobile-app
+npm install
+```
+
+Edit `src/config.ts` to set `WS_URL` to your server's IP address (e.g. `ws://192.168.1.100:8765/ws`).
+
+### Running
+
+```bash
+cd mobile-app
+npx react-native run-android
+```
+
+### Tests
+
+```bash
+cd mobile-app
+npx jest
+```
+
+## Server Tests
 
 ```bash
 cd server
@@ -175,5 +208,21 @@ kids-ai/
 │   ├── tests/
 │   ├── config.yaml
 │   └── requirements.txt
-└── android/                        # Future: thin client app
+└── mobile-app/                     # React Native Android client
+    ├── App.tsx                     # Root component
+    ├── src/
+    │   ├── config.ts               # Server URL, audio constants
+    │   ├── hooks/
+    │   │   ├── useWebSocket.ts     # Binary WebSocket with auto-reconnect
+    │   │   ├── useSessionState.ts  # State machine (IDLE/LISTENING/THINKING/SPEAKING)
+    │   │   ├── useAudioCapture.ts  # Mic → s16le PCM → WebSocket
+    │   │   └── useAudioPlayback.ts # WebSocket → s16le PCM → speaker
+    │   ├── components/
+    │   │   ├── VoiceSession.tsx    # Invisible orchestrator wiring hooks + context
+    │   │   ├── RobotFace.tsx       # Full-screen animated face
+    │   │   ├── Eyes.tsx            # Animated eyes (blink, wide, look-around, squint)
+    │   │   └── Mouth.tsx           # Animated mouth (smile, circle, wavy, talking)
+    │   └── utils/
+    │       └── pcm.ts              # Float32 ↔ s16le conversions
+    └── __tests__/                  # Jest unit + integration tests
 ```
