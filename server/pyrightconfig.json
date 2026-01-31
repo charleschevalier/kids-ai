@@ -1,0 +1,6 @@
+{
+  "include": ["app", "tests"],
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "strict"
+}

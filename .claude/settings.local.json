@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip3:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(python3 -m venv:*)",
+      "Bash(sudo apt install:*)",
+      "Bash(source:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(python:*)"
+    ]
+  }
+}
