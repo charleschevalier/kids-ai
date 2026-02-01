@@ -32,6 +32,7 @@ class STTProcessor:
             beam_size=self.beam_size,
             vad_filter=False,  # We already did VAD upstream
             without_timestamps=True,
+            initial_prompt="Transcription en français.",
         )
 
         text: str = " ".join(seg.text for seg in segments).strip()

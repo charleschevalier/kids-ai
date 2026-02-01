@@ -41,14 +41,36 @@ def _load_whisper_model() -> Any:
     return model
 
 
-def _load_piper_voice() -> Any:
-    """Load Piper TTS voice."""
-    from piper import PiperVoice  # type: ignore[import-untyped]
+def _load_tts_model() -> Any:
+    """Load Chatterbox TTS with French fine-tuned checkpoint."""
+    from chatterbox.tts import ChatterboxTTS  # type: ignore[import-untyped]
+    from huggingface_hub import hf_hub_download  # type: ignore[import-untyped]
+    from safetensors.torch import load_file  # type: ignore[import-untyped]
 
-    logger.info("Loading Piper voice %s...", settings.piper_model)
-    voice: Any = PiperVoice.load(settings.piper_model)
-    logger.info("Piper voice loaded (sample_rate=%d)", voice.config.sample_rate)
-    return voice
+    device = settings.tts_device
+    logger.info("Loading Chatterbox TTS on %s...", device)
+    model: Any = ChatterboxTTS.from_pretrained(device=device)
+
+    # Load French fine-tuned checkpoint
+    checkpoint_path = hf_hub_download(
+        repo_id="Thomcles/Chatterbox-TTS-French",
+        filename="t3_cfg.safetensors",
+    )
+    t3_state = load_file(checkpoint_path, device="cpu")
+    model.t3.load_state_dict(t3_state)
+
+    logger.info("Chatterbox TTS French loaded")
+    return model
+
+
+def _load_grammar_tool() -> Any:
+    """Load LanguageTool for French grammar correction."""
+    import language_tool_python  # type: ignore[import-untyped]
+
+    logger.info("Loading LanguageTool (French)...")
+    tool: Any = language_tool_python.LanguageTool("fr")
+    logger.info("LanguageTool loaded")
+    return tool
 
 
 @asynccontextmanager
@@ -58,14 +80,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    grammar_tool = _load_grammar_tool()
     shared = SharedModels(
         vad_model=_load_vad_model(),
         whisper_model=_load_whisper_model(),
-        piper_voice=_load_piper_voice(),
+        tts_model=_load_tts_model(),
+        grammar_tool=grammar_tool,
     )
     app.state.shared = shared
     logger.info("All models loaded. Server ready.")
     yield
+    grammar_tool.close()
     logger.info("Shutting down.")
 
 

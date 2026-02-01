@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from collections import deque
 from typing import Any
 
 import numpy as np
 import torch
+
+# Number of audio chunks to keep before VAD triggers, so the onset of
+# speech is not lost.  At 32 ms per chunk this gives ~300 ms of lookback.
+_PRE_SPEECH_CHUNKS = 10
 
 
 class VADProcessor:
@@ -27,6 +32,7 @@ class VADProcessor:
         self.is_speaking = False
         self.speech_buffer = bytearray()
         self.silence_samples = 0
+        self._pre_buffer: deque[bytes] = deque(maxlen=_PRE_SPEECH_CHUNKS)
 
         # Silero VAD internal state
         self.model.reset_states()
@@ -51,9 +57,13 @@ class VADProcessor:
             self.silence_samples = 0
 
             if not self.is_speaking:
-                # Speech just started
+                # Speech just started — prepend recent silence chunks so the
+                # onset of the word is not clipped.
                 self.is_speaking = True
                 self.speech_buffer = bytearray()
+                for prev_chunk in self._pre_buffer:
+                    self.speech_buffer.extend(prev_chunk)
+                self._pre_buffer.clear()
                 self.speech_buffer.extend(pcm_s16le)
                 return ("speech_start", None)
 
@@ -62,6 +72,8 @@ class VADProcessor:
             return ("speech_continue", None)
 
         # Silence frame
+        if not self.is_speaking:
+            self._pre_buffer.append(pcm_s16le)
         if self.is_speaking:
             self.speech_buffer.extend(pcm_s16le)
             self.silence_samples += num_samples
@@ -90,3 +102,4 @@ class VADProcessor:
         self.is_speaking = False
         self.speech_buffer = bytearray()
         self.silence_samples = 0
+        self._pre_buffer.clear()

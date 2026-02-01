@@ -11,7 +11,7 @@ vad:
   min_speech_ms: 250
 
 stt:
-  model: "distil-large-v3"
+  model: "large-v3"
   device: "cuda"
   compute_type: "float16"
   beam_size: 5
@@ -20,9 +20,13 @@ stt:
 llm:
   base_url: "http://127.0.0.1:8080"
   model: "local-model"
-  max_tokens: 512
+  max_tokens: 1024
   temperature: 0.7
 
 tts:
-  model: "fr_FR-siwis-medium"
+  device: "cuda"
+  speaker_wav: "app/voices/default_fr.wav"
   sentence_silence: 0.3
+  exaggeration: 0.5
+  temperature: 0.6
+  cfg_weight: 0.3

@@ -38,10 +38,13 @@ class Settings(BaseSettings):
     llm_max_tokens: int = 512
     llm_temperature: float = 0.7
 
-    # TTS
-    piper_model: str = "fr_FR-siwis-medium"
-    piper_speaker: int | None = None
+    # TTS (Chatterbox French)
+    tts_device: str = "cuda"
+    tts_speaker_wav: str = "app/voices/default_fr.wav"
     tts_sentence_silence: float = 0.3
+    tts_exaggeration: float = 0.5
+    tts_temperature: float = 0.6
+    tts_cfg_weight: float = 0.3
 
     # System prompt
     system_prompt_file: str = "app/prompts/system.txt"
@@ -63,11 +66,10 @@ class Settings(BaseSettings):
             "vad": "vad_",
             "stt": "whisper_",      # stt.model -> whisper_model
             "llm": "llm_",
-            "tts": "tts_",          # except piper_model handled below
+            "tts": "tts_",
         }
         # Special mappings where YAML key != field name
         special: dict[tuple[str, str], str] = {
-            ("tts", "model"): "piper_model",
             ("tts", "sentence_silence"): "tts_sentence_silence",
         }
 

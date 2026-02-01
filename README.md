@@ -15,7 +15,7 @@ Android app (React Native)       Server (Python)
 │              │                 │   ↓                         │
 │              │                 │ Sentence chunker            │
 │              │                 │   ↓                         │
-│ Audio play   │<──── PCM ──────│ TTS (Piper, CPU)            │
+│ Audio play   │<──── PCM ──────│ TTS (XTTS-v2, GPU)          │
 └──────────────┘                 └─────────────────────────────┘
 ```
 
@@ -48,12 +48,13 @@ pip install -r requirements.txt
 ### 2. Build llama.cpp
 
 ```bash
-git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp
-cmake ~/llama.cpp -B ~/llama.cpp/build \
+git clone https://github.com/ggml-org/llama.cpp
+cd llama.cpp
+cmake . -B ./build \
     -DBUILD_SHARED_LIBS=OFF \
     -DGGML_CUDA=ON \
     -DLLAMA_CURL=ON
-cmake --build ~/llama.cpp/build --config Release -j$(nproc) --target llama-server
+cmake --build ./build --config Release -j$(nproc) --target llama-server
 ```
 
 ### 3. Download a model
@@ -98,8 +99,8 @@ Edit `server/config.yaml` to change settings:
 
 ```yaml
 stt:
-  model: "distil-large-v3"    # or "large-v3" for better accuracy
-  language: "fr"               # change language here
+  model: "large-v3" # Whisper model name
+  language: "fr" # change language here
 
 llm:
   base_url: "http://127.0.0.1:8080"
@@ -107,12 +108,14 @@ llm:
   temperature: 0.7
 
 tts:
-  model: "fr_FR-siwis-medium"  # Piper voice model name
+  device: "cuda" # XTTS-v2 runs on GPU
+  speaker_wav: "app/voices/default_fr.wav" # voice reference sample
+  language: "fr"
 
 vad:
-  threshold: 0.5               # speech detection sensitivity
-  min_silence_ms: 700          # silence duration to end a turn
-  min_speech_ms: 250           # minimum speech to avoid false triggers
+  threshold: 0.5 # speech detection sensitivity
+  min_silence_ms: 700 # silence duration to end a turn
+  min_speech_ms: 250 # minimum speech to avoid false triggers
 ```
 
 All settings can be overridden with environment variables using the `KIDSAI_` prefix (e.g. `KIDSAI_whisper_language=en`).
@@ -122,30 +125,32 @@ All settings can be overridden with environment variables using the `KIDSAI_` pr
 The client connects to `ws://<host>:8765/ws` and communicates using:
 
 **Client to server:**
+
 - Binary frames: 16 kHz mono s16le PCM audio, 512 samples (1024 bytes) per frame
 - Text frames (JSON): `{"type": "interrupt"}` to cancel the current response
 
 **Server to client:**
+
 - Binary frames: TTS audio as s16le PCM (at the sample rate specified in `tts_config`)
 - Text frames (JSON):
 
-| Message | Description |
-|---------|-------------|
+| Message                                                                          | Description                                                                  |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `{"type": "tts_config", "sample_rate": 22050, "channels": 1, "format": "s16le"}` | Sent once on connect. Tells the client what format the TTS audio will be in. |
-| `{"type": "state", "state": "LISTENING\|THINKING\|SPEAKING\|IDLE"}` | State machine transitions. |
-| `{"type": "transcript", "text": "...", "role": "user"}` | What the user said (STT result). |
-| `{"type": "transcript", "text": "...", "role": "assistant"}` | What the assistant said (full LLM response). |
-| `{"type": "error", "message": "..."}` | Error info. |
+| `{"type": "state", "state": "LISTENING\|THINKING\|SPEAKING\|IDLE"}`              | State machine transitions.                                                   |
+| `{"type": "transcript", "text": "...", "role": "user"}`                          | What the user said (STT result).                                             |
+| `{"type": "transcript", "text": "...", "role": "assistant"}`                     | What the assistant said (full LLM response).                                 |
+| `{"type": "error", "message": "..."}`                                            | Error info.                                                                  |
 
 ## VRAM Usage
 
-| Component | VRAM |
-|-----------|------|
-| faster-whisper distil-large-v3 | ~1.5 GB |
-| llama.cpp 7B Q4_K_M | ~5 GB |
-| llama.cpp 3B Q4_K_M | ~2.5 GB |
-| Silero VAD | CPU only |
-| Piper TTS | CPU only |
+| Component                      | VRAM     |
+| ------------------------------ | -------- |
+| faster-whisper large-v3        | ~2.5 GB  |
+| XTTS-v2                        | ~2-3 GB  |
+| llama.cpp 7B Q4_K_M            | ~5 GB    |
+| llama.cpp 3B Q4_K_M            | ~2.5 GB  |
+| Silero VAD                     | CPU only |
 
 ## Mobile App
 
@@ -180,6 +185,42 @@ cd mobile-app
 npx jest
 ```
 
+## Local Test Client
+
+A Python CLI client for testing the voice assistant from your PC without a tablet.
+
+### Prerequisites
+
+```bash
+sudo apt install libportaudio2   # PortAudio system library
+```
+
+### Setup
+
+```bash
+cd local-client
+python3 -m venv .venv
+.venv/bin/pip install websockets numpy sounddevice
+```
+
+### Running
+
+```bash
+cd local-client
+.venv/bin/python local_client.py
+```
+
+Speak into your mic — state transitions and transcripts are printed in the terminal, and TTS audio plays through your speakers.
+
+Options:
+
+```
+--url ws://host:port/ws   Connect to a different server (default: ws://localhost:8765/ws)
+--list-devices            List available audio devices
+--mic-device N            Use input device index N
+--speaker-device N        Use output device index N
+```
+
 ## Server Tests
 
 ```bash
@@ -203,11 +244,15 @@ kids-ai/
 │   │   │   ├── llm.py              # Async streaming client for llama.cpp
 │   │   │   ├── tts.py              # Piper TTS synthesis
 │   │   │   └── sentence_chunker.py # Split LLM output at sentence boundaries for early TTS
+│   │   ├── voices/
+│   │   │   └── default_fr.wav     # French voice reference sample for XTTS-v2
 │   │   └── audio/
 │   │       └── codec.py            # PCM / float32 conversions
 │   ├── tests/
 │   ├── config.yaml
 │   └── requirements.txt
+├── local-client/
+│   └── local_client.py            # CLI test client (mic + speaker, no tablet needed)
 └── mobile-app/                     # React Native Android client
     ├── App.tsx                     # Root component
     ├── src/

@@ -4,6 +4,7 @@ import asyncio
 import enum
 import json
 import logging
+import re
 from typing import Any
 
 from fastapi import WebSocket
@@ -16,6 +17,37 @@ from app.pipeline.tts import TTSProcessor
 from app.pipeline.vad import VADProcessor
 
 logger = logging.getLogger(__name__)
+
+# Regex to strip emojis and miscellaneous symbols from LLM output.
+def _sanitize_for_tts(text: str) -> str:
+    """Clean text for TTS synthesis.
+
+    Chatterbox handles punctuation and numbers natively,
+    so we only collapse whitespace here.
+    """
+    text = text.replace("**", "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001f600-\U0001f64f"  # emoticons
+    "\U0001f300-\U0001f5ff"  # symbols & pictographs
+    "\U0001f680-\U0001f6ff"  # transport & map
+    "\U0001f1e0-\U0001f1ff"  # flags
+    "\U0001f900-\U0001f9ff"  # supplemental symbols
+    "\U0001fa00-\U0001fa6f"  # chess symbols
+    "\U0001fa70-\U0001faff"  # symbols extended-A
+    "\U00002702-\U000027b0"  # dingbats
+    "\U0000fe00-\U0000fe0f"  # variation selectors
+    "\U0000200d"             # zero-width joiner
+    "\U000020e3"             # combining enclosing keycap
+    "\U00002600-\U000026ff"  # misc symbols
+    "\U00002300-\U000023ff"  # misc technical
+    "]+",
+    flags=re.UNICODE,
+)
 
 # Size of binary audio chunks sent to the client (bytes).
 _WS_AUDIO_CHUNK = 4096
@@ -35,11 +67,13 @@ class SharedModels:
         self,
         vad_model: Any,
         whisper_model: Any,
-        piper_voice: Any,
+        tts_model: Any,
+        grammar_tool: Any = None,
     ) -> None:
         self.vad_model: Any = vad_model
         self.whisper_model: Any = whisper_model
-        self.piper_voice: Any = piper_voice
+        self.tts_model: Any = tts_model
+        self.grammar_tool: Any = grammar_tool
 
 
 class Session:
@@ -74,8 +108,12 @@ class Session:
             temperature=settings.llm_temperature,
         )
         self.tts = TTSProcessor(
-            shared.piper_voice,
+            shared.tts_model,
+            speaker_wav=settings.tts_speaker_wav,
             sentence_silence=settings.tts_sentence_silence,
+            exaggeration=settings.tts_exaggeration,
+            temperature=settings.tts_temperature,
+            cfg_weight=settings.tts_cfg_weight,
         )
 
         # Inter-stage queues
@@ -88,6 +126,9 @@ class Session:
         self.messages: list[dict[str, str]] = [
             {"role": "system", "content": settings.get_system_prompt()},
         ]
+
+        # Grammar correction (shared LanguageTool instance)
+        self._grammar_tool = shared.grammar_tool
 
         # Cancellation and shutdown
         self._cancel = asyncio.Event()
@@ -239,6 +280,19 @@ class Session:
             if self._cancel.is_set():
                 continue
 
+            sentence = _EMOJI_RE.sub("", sentence).strip()
+            sentence = _sanitize_for_tts(sentence)
+            if not sentence or not any(c.isalpha() for c in sentence):
+                continue
+
+            if self._grammar_tool is not None:
+                try:
+                    sentence = await loop.run_in_executor(
+                        None, self._correct_grammar, sentence
+                    )
+                except Exception:
+                    logger.debug("Grammar check failed, using original", exc_info=True)
+
             try:
                 audio_bytes: bytes = await loop.run_in_executor(
                     None, self.tts.synthesize, sentence
@@ -306,6 +360,18 @@ class Session:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _correct_grammar(self, text: str) -> str:
+        """Auto-correct French grammar using LanguageTool. Blocking."""
+        import language_tool_python  # type: ignore[import-untyped]
+
+        matches = self._grammar_tool.check(text)
+        if matches:
+            corrected = language_tool_python.utils.correct(text, matches)
+            if corrected != text:
+                logger.info("Grammar: %r -> %r", text, corrected)
+            return corrected
+        return text
 
     async def _set_state(self, new_state: SessionState) -> None:
         if new_state != self.state:

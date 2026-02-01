@@ -26,7 +26,7 @@ from app.session import Session, SharedModels
 FAKE_TRANSCRIPT = "Bonjour, raconte-moi une histoire."
 FAKE_LLM_RESPONSE = "Il était une fois un petit chat. Il aimait dormir au soleil."
 FAKE_TTS_AUDIO = b"\x00\x01" * 2048  # 4096 bytes of fake PCM
-FAKE_TTS_SAMPLE_RATE = 22050
+FAKE_TTS_SAMPLE_RATE = 24000
 
 # ---------------------------------------------------------------------------
 # Fake models that satisfy real constructors
@@ -60,17 +60,18 @@ class FakeWhisperModel:
         return [seg], MagicMock()
 
 
-class FakePiperVoice:
-    """Fake Piper voice that satisfies PiperVoice interface."""
+class FakeTTSModel:
+    """Fake Chatterbox TTS model."""
 
-    def __init__(self) -> None:
-        self.config = MagicMock()
-        self.config.sample_rate = FAKE_TTS_SAMPLE_RATE
+    sr = 24000
 
-    def synthesize_stream_raw(
-        self, text: str, **kwargs: Any
-    ) -> list[bytes]:
-        return [FAKE_TTS_AUDIO]
+    def generate(self, text: str, audio_prompt_path: str | None = None, **kwargs: Any) -> Any:
+        samples = np.zeros(4096, dtype=np.float32)
+        mock_tensor = MagicMock()
+        mock_tensor.squeeze.return_value = mock_tensor
+        mock_tensor.cpu.return_value = mock_tensor
+        mock_tensor.numpy.return_value = samples
+        return mock_tensor
 
 
 class FakeLLMClient:
@@ -114,7 +115,7 @@ def _build_session(
     shared = SharedModels(
         vad_model=vad_model,
         whisper_model=FakeWhisperModel(),
-        piper_voice=FakePiperVoice(),
+        tts_model=FakeTTSModel(),
     )
     session = Session(ws, shared)
     # Replace LLM client (the real one tries to connect via HTTP)
