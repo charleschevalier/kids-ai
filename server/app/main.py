@@ -23,22 +23,22 @@ def _load_vad_model() -> Any:
     return result
 
 
-def _load_whisper_model() -> Any:
-    """Load faster-whisper model."""
-    from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+def _load_whisper_model() -> tuple[Any, Any]:
+    """Load HuggingFace Whisper model and processor. Returns (model, processor)."""
+    from app.pipeline.stt import load_whisper_pipeline
 
     logger.info(
         "Loading Whisper model %s on %s...",
         settings.whisper_model,
         settings.whisper_device,
     )
-    model: Any = WhisperModel(
-        settings.whisper_model,
+    model, processor = load_whisper_pipeline(
+        model_id=settings.whisper_model,
         device=settings.whisper_device,
-        compute_type=settings.whisper_compute_type,
+        torch_dtype=settings.whisper_compute_type,
     )
     logger.info("Whisper model loaded")
-    return model
+    return (model, processor)
 
 
 def _load_tts_model() -> Any:
@@ -81,9 +81,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     grammar_tool = _load_grammar_tool()
+    whisper_model, whisper_processor = _load_whisper_model()
     shared = SharedModels(
         vad_model=_load_vad_model(),
-        whisper_model=_load_whisper_model(),
+        whisper_model=whisper_model,
+        whisper_processor=whisper_processor,
         tts_model=_load_tts_model(),
         grammar_tool=grammar_tool,
     )

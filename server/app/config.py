@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,8 @@ class Settings(BaseSettings):
 
     # System prompt
     system_prompt_file: str = "app/prompts/system.txt"
+    jokes_file: str = "app/prompts/jokes.txt"
+    jokes_per_session: int = 10
 
     @model_validator(mode="before")
     @classmethod
@@ -92,8 +95,23 @@ class Settings(BaseSettings):
     def get_system_prompt(self) -> str:
         path = _SERVER_ROOT / self.system_prompt_file
         if path.exists():
-            return path.read_text().strip()
-        return "Tu es un assistant vocal gentil et patient pour les enfants."
+            prompt = path.read_text().strip()
+        else:
+            prompt = "Tu es un assistant vocal gentil et patient pour les enfants."
+
+        jokes = self._load_random_jokes()
+        if jokes:
+            prompt += "\n\nVoici des blagues que tu connais. Quand on te demande une blague, choisis-en une dans cette liste. N'invente JAMAIS de blague toi-même.\n"
+            prompt += "\n".join(f"- {j}" for j in jokes)
+
+        return prompt
+
+    def _load_random_jokes(self) -> list[str]:
+        path = _SERVER_ROOT / self.jokes_file
+        if not path.exists():
+            return []
+        lines = [l.strip() for l in path.read_text().splitlines() if l.strip()]
+        return random.sample(lines, min(self.jokes_per_session, len(lines)))
 
     class Config:
         env_prefix = "KIDSAI_"

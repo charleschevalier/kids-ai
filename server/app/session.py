@@ -10,7 +10,8 @@ from typing import Any
 from fastapi import WebSocket
 
 from app.config import settings
-from app.pipeline.llm import LLMClient
+from app.pipeline.llm import LLMClient, StreamEvent, ToolCall
+from app.pipeline.math_eval import execute_calculate_tool
 from app.pipeline.sentence_chunker import SentenceChunker
 from app.pipeline.stt import STTProcessor
 from app.pipeline.tts import TTSProcessor
@@ -52,6 +53,27 @@ _EMOJI_RE = re.compile(
 # Size of binary audio chunks sent to the client (bytes).
 _WS_AUDIO_CHUNK = 4096
 
+# Tool definition for the calculate tool (OpenAI function-calling format).
+_CALCULATE_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "calculate",
+        "description": "Evaluate a math expression and return the numeric result. Use this for any arithmetic question.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "A math expression using numbers and operators, e.g. '12 * 13' or '145 + 278'",
+                },
+            },
+            "required": ["expression"],
+        },
+    },
+}
+
+_TOOLS = [_CALCULATE_TOOL]
+
 
 class SessionState(enum.Enum):
     IDLE = "IDLE"
@@ -67,11 +89,13 @@ class SharedModels:
         self,
         vad_model: Any,
         whisper_model: Any,
+        whisper_processor: Any,
         tts_model: Any,
         grammar_tool: Any = None,
     ) -> None:
         self.vad_model: Any = vad_model
         self.whisper_model: Any = whisper_model
+        self.whisper_processor: Any = whisper_processor
         self.tts_model: Any = tts_model
         self.grammar_tool: Any = grammar_tool
 
@@ -98,6 +122,7 @@ class Session:
         )
         self.stt = STTProcessor(
             shared.whisper_model,
+            shared.whisper_processor,
             language=settings.whisper_language,
             beam_size=settings.whisper_beam_size,
         )
@@ -122,8 +147,9 @@ class Session:
         self.sentence_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=16)
         self.tts_audio_queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=32)
 
-        # Conversation history
-        self.messages: list[dict[str, str]] = [
+        # Conversation history (system prompt is refreshed before each LLM call
+        # so the joke selection rotates).
+        self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": settings.get_system_prompt()},
         ]
 
@@ -211,6 +237,10 @@ class Session:
                 await self.text_queue.put(None)
                 return
 
+            # Clear any previous barge-in cancellation now that we have
+            # new user audio to process.
+            self._cancel.clear()
+
             text: str = await loop.run_in_executor(
                 None, self.stt.transcribe, audio_bytes
             )
@@ -230,37 +260,84 @@ class Session:
                 await self.sentence_queue.put(None)
                 return
 
-            chunker = SentenceChunker()
-            full_response = ""
+            # Refresh system prompt so joke selection rotates each turn
+            self.messages[0]["content"] = settings.get_system_prompt()
 
             try:
-                async for token in self.llm.stream_chat(self.messages):
-                    if self._cancel.is_set():
-                        break
-                    full_response += token
-                    for sentence in chunker.add_token(token):
-                        await self.sentence_queue.put(sentence)
+                await self._llm_generate(tools=_TOOLS)
             except Exception:
                 logger.exception("LLM streaming error")
                 await self._send_json(type="error", message="LLM error")
                 await self._set_state(SessionState.IDLE)
-                continue
 
-            if not self._cancel.is_set():
-                remaining = chunker.flush()
-                if remaining:
-                    await self.sentence_queue.put(remaining)
+    async def _llm_generate(
+        self,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Run one LLM generation, handling a single tool-call round if needed."""
+        chunker = SentenceChunker()
+        full_response = ""
+        tool_calls: list[ToolCall] = []
 
-                # Sentinel: end of this response
-                await self.sentence_queue.put(None)
+        async for event in self.llm.stream_chat(self.messages, tools=tools):
+            if self._cancel.is_set():
+                return
+            if event.token:
+                full_response += event.token
+                for sentence in chunker.add_token(event.token):
+                    await self.sentence_queue.put(sentence)
+            if event.tool_calls:
+                tool_calls = event.tool_calls
 
-                if full_response:
-                    self.messages.append(
-                        {"role": "assistant", "content": full_response}
-                    )
-                    await self._send_json(
-                        type="transcript", text=full_response, role="assistant"
-                    )
+        if self._cancel.is_set():
+            return
+
+        # --- Handle tool calls ---
+        if tool_calls:
+            tc = tool_calls[0]
+            logger.info("Tool call: %s(%s)", tc.name, tc.arguments)
+
+            if tc.name == "calculate":
+                result = execute_calculate_tool(tc.arguments)
+                logger.info("Calculate result: %s", result)
+
+                # Append the assistant's tool-call message
+                self.messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.name, "arguments": tc.arguments},
+                    }],
+                })
+                # Append the tool result
+                self.messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result,
+                })
+
+                # Second LLM call (no tools) to produce the spoken answer
+                await self._llm_generate(tools=None)
+                return
+
+        # --- Regular text response ---
+        remaining = chunker.flush()
+        if remaining:
+            await self.sentence_queue.put(remaining)
+
+        # Sentinel: end of this response
+        await self.sentence_queue.put(None)
+
+        if full_response:
+            self.messages.append(
+                {"role": "assistant", "content": full_response}
+            )
+            await self._send_json(
+                type="transcript", text=full_response, role="assistant"
+            )
+
 
     # ------------------------------------------------------------------
     # Stage 4: TTS
@@ -280,11 +357,6 @@ class Session:
             if self._cancel.is_set():
                 continue
 
-            sentence = _EMOJI_RE.sub("", sentence).strip()
-            sentence = _sanitize_for_tts(sentence)
-            if not sentence or not any(c.isalpha() for c in sentence):
-                continue
-
             if self._grammar_tool is not None:
                 try:
                     sentence = await loop.run_in_executor(
@@ -292,6 +364,11 @@ class Session:
                     )
                 except Exception:
                     logger.debug("Grammar check failed, using original", exc_info=True)
+
+            sentence = _EMOJI_RE.sub("", sentence).strip()
+            sentence = _sanitize_for_tts(sentence)
+            if not sentence or not any(c.isalpha() for c in sentence):
+                continue
 
             try:
                 audio_bytes: bytes = await loop.run_in_executor(
@@ -354,7 +431,10 @@ class Session:
                     break
 
         self.vad.reset()
-        self._cancel.clear()
+        # NOTE: do NOT clear _cancel here. It stays set so that workers
+        # currently blocked in run_in_executor (TTS synthesis, etc.) will
+        # see the cancellation when they return.  _cancel is cleared in
+        # _stt_worker when new user audio arrives for processing.
         await self._set_state(SessionState.IDLE)
 
     # ------------------------------------------------------------------

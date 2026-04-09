@@ -188,6 +188,10 @@ async def _run(
             playback_rate = config.get("sample_rate", playback_rate)
             print(f"{C.DIM}TTS: {playback_rate} Hz, s16le, mono{C.RESET}")
 
+        # Show which device is being used
+        device_info = sd.query_devices(mic_device)
+        print(f"{C.DIM}Using microphone: {device_info['name']} (device {mic_device}){C.RESET}")
+
         mic_stream = sd.InputStream(
             samplerate=MIC_SAMPLE_RATE,
             channels=MIC_CHANNELS,

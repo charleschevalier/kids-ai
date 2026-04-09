@@ -11,7 +11,7 @@ vad:
   min_speech_ms: 250
 
 stt:
-  model: "large-v3"
+  model: "bofenghuang/whisper-large-v3-french"
   device: "cuda"
   compute_type: "float16"
   beam_size: 5
@@ -19,7 +19,7 @@ stt:
 
 llm:
   base_url: "http://127.0.0.1:8080"
-  model: "local-model"
+  model: "Meta-Llama-3.1-8B-Instruct"
   max_tokens: 1024
   temperature: 0.7
 

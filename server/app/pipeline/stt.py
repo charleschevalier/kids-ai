@@ -3,19 +3,22 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
-from faster_whisper import WhisperModel  # type: ignore[import-untyped]
+import torch
+from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline  # type: ignore[import-untyped]
 
 
 class STTProcessor:
-    """Wraps faster-whisper. Transcribes complete VAD-segmented utterances."""
+    """Wraps a HuggingFace Whisper model. Transcribes complete VAD-segmented utterances."""
 
     def __init__(
         self,
-        model: WhisperModel,
+        model: Any,
+        processor: Any,
         language: str = "fr",
         beam_size: int = 5,
     ) -> None:
-        self.model: Any = model
+        self.model = model
+        self.processor = processor
         self.language = language
         self.beam_size = beam_size
 
@@ -26,14 +29,47 @@ class STTProcessor:
         """
         audio = np.frombuffer(pcm_s16le, dtype=np.int16).astype(np.float32) / 32768.0
 
-        segments, _info = self.model.transcribe(
+        # Process audio directly with the feature extractor
+        inputs = self.processor(
             audio,
-            language=self.language,
-            beam_size=self.beam_size,
-            vad_filter=False,  # We already did VAD upstream
-            without_timestamps=True,
-            initial_prompt="Transcription en français.",
+            sampling_rate=16000,
+            return_tensors="pt",
         )
 
-        text: str = " ".join(seg.text for seg in segments).strip()
+        # Move inputs to same device and dtype as model
+        inputs = {k: v.to(device=self.model.device, dtype=self.model.dtype) for k, v in inputs.items()}
+
+        # Generate transcription
+        with torch.no_grad():
+            generated_ids = self.model.generate(
+                **inputs,
+                language=self.language,
+                num_beams=self.beam_size,
+            )
+
+        # Decode the generated IDs to text
+        text = self.processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+        )[0].strip()
+
         return text
+
+
+def load_whisper_pipeline(
+    model_id: str,
+    device: str = "cuda",
+    torch_dtype: str = "float16",
+) -> tuple[Any, Any]:
+    """Load a HuggingFace Whisper model and processor. Returns (model, processor)."""
+    dtype = torch.float16 if torch_dtype == "float16" else torch.float32
+
+    model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model_id,
+        torch_dtype=dtype,
+        low_cpu_mem_usage=True,
+    ).to(device)
+
+    processor = AutoProcessor.from_pretrained(model_id)
+
+    return (model, processor)
